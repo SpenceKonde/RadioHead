@@ -15,9 +15,8 @@
 #elif defined (ARDUINO_ARCH_STM32F4)
  #include <libmaple/HardwareSerial.h>
 #elif (RH_PLATFORM == RH_PLATFORM_ATTINY_MEGA)
+ // Everything derived from the official megaavr core calls it UartClass and UART.h instead of the normal names.
  #include <UART.h>
-#elif (RH_PLATFORM == RH_PLATFORM_ARDUINO) && defined(ARDUINO_attinyxy6)
-// AT Tiny Mega 3216 etc
  #define HardwareSerial UartClass
 #else
  #include <HardwareSerial.h>
