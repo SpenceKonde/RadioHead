@@ -1134,6 +1134,13 @@ k             Fix SPI bus speed errors on 8MHz Arduinos.
              Changes to RadioHead.h RHHardwareSPI.cpp and RHSPIDriver.cpp for ESP32 support
 	     provided by Juliano Perotto.
 
+\changes added by Spence Konde 2022-03-10
+       Fix RH_Serial on megaTinyCore. Somehow it got broken and was trying to include HardwareSerial.
+       Make the conditions for RH_PLATFORM_ATTINY_MEGA catch megaAVR 0-series from MegaCoreX as well as the Dx-series parts. All of them need the same treatment.
+       Improve the timer selection logic for RH_PLATFORM_ATTINY_MEGA for Dx-series and megazero, will check for TCB3 if TCB1 used for millis, that way it doesn't take the tone timer if it doesn't have to.
+       I suggest renaming RH_PLATFORM_ATTINY_MEGA to RH_PLATFORM_MODERN_AVR or RH_PLATFORM_MEGAAVR.
+
+
 \author  Mike McCauley. DO NOT CONTACT THE AUTHOR DIRECTLY. USE THE GOOGLE GROUP GIVEN ABOVE
 */
 
@@ -1402,6 +1409,7 @@ these examples and explanations and extend them to suit your needs.
 #define RH_PLATFORM_MONGOOSE_OS      16
 #define RH_PLATFORM_ATTINY           17
 // Spencer Kondes megaTinyCore:						   
+// Spence Konde's megaTinyCore or DxCore or MCUDude's MegaCoreX (Spence Konde: Suggest renaming platform, see notes below)
 #define RH_PLATFORM_ATTINY_MEGA      18
 #define RH_PLATFORM_STM32L0          19
 						   
@@ -1426,7 +1434,13 @@ these examples and explanations and extend them to suit your needs.
   #define RH_PLATFORM RH_PLATFORM_STM32L0
  #elif defined(MGOS)
   #define RH_PLATFORM RH_PLATFORM_MONGOOSE_OS
-#elif defined(MEGATINYCORE) || defined(ARDUINO_attinyxy2) || defined(ARDUINO_attinyxy4) || defined(ARDUINO_attinyxy6) || defined(ARDUINO_attinyxy7)
+// Looking for the corename defines apparently doesn't work reliably; it wasn't correctly picking up that it was on megaTinyCore.
+// First we check the corenames which guarantee that it's one of these parts, otherwise we look for whether it's a modern AVR. All of the modern AVRs present the same complications
+// This should catch EVERY modern AVR. It may not work on the official "megaavr" package, since that uses the pin enums and everyone else ripped that mess out.
+// This platform should be renamed, but that decicsion is above my pay grade. Note that "megaavr" is not an approrpiate name for this architecture, though Arduino uses it in as such.
+// for the architecture: Microchip calls everything with ATmega in the name "megaAVR". I often use "modern AVR"; it is also correct to describe them as the "AVRxt" parts for the instruction set variant (same instructions as AVRe+, but better timing)
+// -Spence Konde 3/10/2022
+ #elif (defined(MEGATINYCORE) || defined(DXCORE) || defined(ARDUINO_ARCH_MEGAAVR) || (defined(__AVR_ARCH__) && __AVR_ARCH__ >= 100))
   #define RH_PLATFORM RH_PLATFORM_ATTINY_MEGA
  #elif defined(__AVR_ATtiny84__) || defined(__AVR_ATtiny85__) || defined(__AVR_ATtiny24__) || defined(__AVR_ATtiny44__) || defined(__AVR_ATtiny45__) || defined(__AVR_ATtinyX4__) || defined(__AVR_ATtinyX5__) || defined(__AVR_ATtiny2313__) || defined(__AVR_ATtiny4313__) || defined(__AVR_ATtinyX313__) || defined(ARDUINO_attiny)
   #define RH_PLATFORM RH_PLATFORM_ATTINY
@@ -1475,13 +1489,35 @@ these examples and explanations and extend them to suit your needs.
  #include <SPI.h>
   #define RH_HAVE_HARDWARE_SPI
   #define RH_HAVE_SERIAL
-  // On most AT_TINY_MEGA, Timer A is used for millis/micros, and B 0 or 1 for Tone by default.
-  // But not all devices support TCB1, so we use TCB0 on some variants.
-  // This is the same strategy for timer selection that Tone uses:
-  #if defined(MILLIS_USE_TIMERB0) && defined(TCB1)
-   #define RH_ATTINY_MEGA_ASK_TIMER TCB1
-   #define RH_ATTINY_MEGA_ASK_TIMER_VECTOR TCB1_INT_vect
-  #else
+  // We need to make sure that we don't try to use the same timer as millis timekeeping.
+  // megaTinyCore allows any timer to be used for millis, and DxCore allows any except TCD0.
+  // megaTinyCore never defaults to uing TCB0 for millis - it is too valuable for other purposes - but it is a permitted option.
+  // DxCore parts all have at least 2, and almost all have at least 3 timers.
+  // megaTinyCore on a 2-series part, or DxCore on a 20 or 14 pin DD-series device will default TCB1
+  // DxCore defaults TCB2, and MegaCoreX uses TCB2 and provides no options.
+  // Let's try to choose the timer that's going to intefere with the least
+  // Duplicating the logic that Tone uses guarantees it will break tone(), but we don't need to do that.
+  // Our first choice should be TCB1, if it's not used for millis.
+  // If it is there are two cases: either there are or are not higher numbered timers.
+  // If there are, the default was TCB2, so they specifically chose not to use it. That's a good hint that it is being used by some inflexible library.
+  // So we shouldn't just take the place of millis in fighting with whatever else needs that timer. Instead, if it's got a TCB3, we should use that (48+ pin Dx-series parts).
+  // If TCB1 is used for millis and there is no TCB3, or if there is no TCB1 at all, then we use TCB0. If the part has no TCB1, and uses TCB0 for millis, it will fail to compile
+  // only if the contents of the file where the ISR is defined are referenced.
+  // -Spence Konde
+  #if defined(TCB1)
+   #if defined(MILLIS_USE_TIMERB1)
+    #if defined(TCB3) //Has TCB1 but is used for millis, but has a TCB3
+     #define RH_ATTINY_MEGA_ASK_TIMER TCB3
+     #define RH_ATTINY_MEGA_ASK_TIMER_VECTOR TCB3_INT_vect
+    #else // Has TCB1, using it for millis, and no TCB3 to use
+     #define RH_ATTINY_MEGA_ASK_TIMER TCB0
+     #define RH_ATTINY_MEGA_ASK_TIMER_VECTOR TCB0_INT_vect
+    #endif
+   #else // Has TCB1, not using it for millis
+    #define RH_ATTINY_MEGA_ASK_TIMER TCB1
+    #define RH_ATTINY_MEGA_ASK_TIMER_VECTOR TCB1_INT_vect
+   #endif
+  #else // Does not have a TCB1. Will blow up later if this vector is needed and they are using it for millis.
    #define RH_ATTINY_MEGA_ASK_TIMER TCB0
    #define RH_ATTINY_MEGA_ASK_TIMER_VECTOR TCB0_INT_vect
   #endif
